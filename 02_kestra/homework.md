@@ -31,7 +31,7 @@ Answer: green_tripdata_2020-04.csv
 
 ```sql
 
-SELECT count(1) FROM `zoomcamp-airflow-444903.zoomcamp.yellow_tripdata` 
+SELECT count(1) FROM `black-abode-447903-g2.de_zoomcamp.yellow_tripdata` 
 WHERE filename LIKE '%2020%';
 ```
 
@@ -46,7 +46,7 @@ Answer: 24,648,499
 
 ```sql
 
-SELECT count(1) FROM `zoomcamp-airflow-444903.zoomcamp.green_tripdata` 
+SELECT count(1) FROM `black-abode-447903-g2.de_zoomcamp.green_tripdata` 
 WHERE filename LIKE '%2020%';
 ```
 
@@ -61,7 +61,7 @@ Answer: 1,734,051
 
 ```sql
 
-SELECT count(1) FROM `zoomcamp-airflow-444903.zoomcamp.yellow_tripdata` 
+SELECT count(1) FROM `black-abode-447903-g2.de_zoomcamp.yellow_tripdata` 
 WHERE filename LIKE '%2021-03%';
 ```
 
