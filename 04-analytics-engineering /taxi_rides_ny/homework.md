@@ -50,6 +50,8 @@ from {{ source('raw_nyc_tripdata', 'ext_green_taxi' ) }}
 - `select * from myproject.my_nyc_tripdata.ext_green_taxi`
 - `select * from dtc_zoomcamp_2025.raw_nyc_tripdata.green_taxi`
 
+### Solution: `select * from myproject.raw_nyc_tripdata.ext_green_taxi`
+
 
 ### Question 2: dbt Variables & Dynamic Models
 
@@ -72,6 +74,7 @@ What would you change to accomplish that in a such way that command line argumen
 - Update the WHERE clause to `pickup_datetime >= CURRENT_DATE - INTERVAL '{{ var("days_back", env_var("DAYS_BACK", "30")) }}' DAY`
 - Update the WHERE clause to `pickup_datetime >= CURRENT_DATE - INTERVAL '{{ env_var("DAYS_BACK", var("days_back", "30")) }}' DAY`
 
+### Solution: Update the WHERE clause to `pickup_datetime >= CURRENT_DATE - INTERVAL '{{ var("days_back", env_var("DAYS_BACK", "30")) }}' DAY`
 
 ### Question 3: dbt Data Lineage and Execution
 
@@ -87,6 +90,7 @@ Select the option that does **NOT** apply for materializing `fct_taxi_monthly_zo
 - `dbt run --select +models/core/`
 - `dbt run --select models/staging/+`
 
+### Solution: dbt run --select models/staging/+
 
 ### Question 4: dbt Macros and Jinja
 
@@ -125,6 +129,12 @@ That all being said, regarding macro above, **select all statements that are tru
 - When using `stg`, it materializes in the dataset defined in `DBT_BIGQUERY_STAGING_DATASET`, or defaults to `DBT_BIGQUERY_TARGET_DATASET`
 - When using `staging`, it materializes in the dataset defined in `DBT_BIGQUERY_STAGING_DATASET`, or defaults to `DBT_BIGQUERY_TARGET_DATASET`
 
+### Solution: All are true except the above second statement
+- Setting a value for  `DBT_BIGQUERY_TARGET_DATASET` env var is mandatory, or it'll fail to compile
+- When using `core`, it materializes in the dataset defined in `DBT_BIGQUERY_TARGET_DATASET`
+- When using `stg`, it materializes in the dataset defined in `DBT_BIGQUERY_STAGING_DATASET`, or defaults to `DBT_BIGQUERY_TARGET_DATASET`
+- When using `staging`, it materializes in the dataset defined in `DBT_BIGQUERY_STAGING_DATASET`, or defaults to `DBT_BIGQUERY_TARGET_DATASET`
+
 
 ## Serious SQL
 
@@ -152,13 +162,167 @@ Considering the YoY Growth in 2020, which were the yearly quarters with the best
 - green: {best: 2020/Q1, worst: 2020/Q2}, yellow: {best: 2020/Q1, worst: 2020/Q2}
 - green: {best: 2020/Q1, worst: 2020/Q2}, yellow: {best: 2020/Q3, worst: 2020/Q4}
 
+### Solutions:
+1. Create a new model `fct_taxi_trips_quarterly_revenue.sql`
+```sql
+{{ config(materialized='table') }}
+
+with trips_data as (
+    select *,
+        EXTRACT(YEAR FROM pickup_datetime) AS year,
+        EXTRACT(QUARTER FROM pickup_datetime) AS quarter,
+        EXTRACT(MONTH FROM pickup_datetime) AS month,
+        CONCAT(EXTRACT(YEAR FROM pickup_datetime), '/Q', EXTRACT(QUARTER FROM pickup_datetime)) AS year_quarter 
+        
+    from {{ ref('fact_trips') }}
+)
+    select 
+    -- Revenue grouping 
+    pickup_zone as revenue_zone,
+    {{ dbt.date_trunc("month", "pickup_datetime") }} as revenue_month, 
+
+    service_type, 
+
+    -- Add new date components
+    year,
+    quarter,
+    month,
+    year_quarter,
+
+    -- Revenue calculation 
+    sum(fare_amount) as revenue_monthly_fare,
+    sum(extra) as revenue_monthly_extra,
+    sum(mta_tax) as revenue_monthly_mta_tax,
+    sum(tip_amount) as revenue_monthly_tip_amount,
+    sum(tolls_amount) as revenue_monthly_tolls_amount,
+    sum(ehail_fee) as revenue_monthly_ehail_fee,
+    sum(improvement_surcharge) as revenue_monthly_improvement_surcharge,
+    sum(total_amount) as revenue_monthly_total_amount,
+
+    -- Additional calculations
+    count(tripid) as total_monthly_trips,
+    avg(passenger_count) as avg_monthly_passenger_count,
+    avg(trip_distance) as avg_monthly_trip_distance
+
+    from trips_data
+    group by 1,2,3,4,5,6,7 
+
+```
+
+Inside models/core directory, define the materialization type:
+``` sql
+{{
+    config(
+        materialized='table'
+    )
+}}
+```
+2. Compute the Quarterly Revenues for each year for based on `total_amount`
+```sql
+    SELECT
+        year,
+        quarter,
+        year_quarter,
+        service_type,
+        SUM(revenue_monthly_total_amount)
+    FROM {{ dm_monthly_zone_revenue }}
+    GROUP BY 1,2,3,4
+```
+3. Compute the Quarterly YoY (Year-over-Year) revenue growth 
+```sql
+yoy_revenue AS (
+    SELECT
+        q.year,
+        q.quarter,
+        q.year_quarter,
+        q.service_type,
+        q.total_revenue,
+        LAG(q.total_revenue) OVER (
+            PARTITION BY q.service_type, qr.quarter
+            ORDER BY qr.year
+        ) AS prev_year_revenue,
+        ROUND(
+            (q.total_revenue - LAG(q.total_revenue) OVER (
+                PARTITION BY q.service_type, q.quarter
+                ORDER BY q.year
+            )) / NULLIF(LAG(q.total_revenue) OVER (
+                PARTITION BY q.service_type, q.quarter
+                ORDER BY q.year
+            ), 0) * 100, 2
+        ) AS yoy_growth
+    FROM quarterly_revenue qr
+)
+
+SELECT 
+    year,
+    quarter,
+    year_quarter,
+    service_type,
+    total_revenue,         
+    prev_year_revenue,     
+    yoy_growth             
+FROM yoy_revenue
+```
+
+Considering the YoY Growth in 2020, which were the yearly quarters with the best (or less worse) and worst results for green, and yellow:
+
+### green: {best: 2020/Q1, worst: 2020/Q2}, yellow: {best: 2020/Q1, worst: 2020/Q2}
 
 ### Question 6: P97/P95/P90 Taxi Monthly Fare
 
-1. Create a new model `fct_taxi_trips_monthly_fare_p95.sql`
+### Solutions:
+1. Create a new model `fct_taxi_trips_monthly_fare_p95.sql
 2. Filter out invalid entries (`fare_amount > 0`, `trip_distance > 0`, and `payment_type_description in ('Cash', 'Credit Card')`)
-3. Compute the **continous percentile** of `fare_amount` partitioning by service_type, year and and month
+```sql   
+{{
+    config(
+        materialized = 'table'
+    )
+}}
 
+WITH trip_fare_percentiles AS (
+  SELECT 
+    pickup_year
+  , pickup_month
+  , service_type
+  , fare_amount
+  , PERCENTILE_CONT(fare_amount, 0.5) OVER(PARTITION BY pickup_year, pickup_month, service_type) AS p50
+  , PERCENTILE_CONT(fare_amount, 0.9) OVER(PARTITION BY pickup_year, pickup_month, service_type) AS p90
+  , PERCENTILE_CONT(fare_amount, 0.95) OVER(PARTITION BY pickup_year, pickup_month, service_type) AS p95
+  , PERCENTILE_CONT(fare_amount, 0.97) OVER(PARTITION BY pickup_year, pickup_month, service_type) AS p97
+  FROM {{ ref('fact_trips') }}
+  WHERE 1=1
+        AND pickup_year >= 2019 
+        AND pickup_year < 2021
+        AND fare_amount > 0 
+        AND trip_distance > 0
+        AND LOWER(payment_type_description) IN ('cash', 'credit card')
+)
+
+SELECT 
+  pickup_year
+, pickup_month
+, service_type
+, MIN(fare_amount) AS min_fare_amount
+, AVG(fare_amount) AS avg_fare_amount
+, ANY_VALUE(p50) AS p50
+, ANY_VALUE(p90) AS p90
+, ANY_VALUE(p95) AS p95
+, ANY_VALUE(p97) AS p97
+, MAX(fare_amount) AS max_fare_amount
+FROM trip_fare_percentiles
+GROUP BY 1,2,3
+```
+
+2. Compute the **continous percentile** of `fare_amount` partitioning by service_type, year and and month
+```sql   
+SELECT * 
+FROM `woven-catwalk-447100-j8.prod.fact_taxi_trips_monthly_fare_p95` 
+WHERE 1=1
+      AND pickup_year = 2020
+      AND pickup_month = 4
+ORDER BY service_type,1,2
+```
 Now, what are the values of `p97`, `p95`, `p90` for Green Taxi and Yellow Taxi, in April 2020?
 
 - green: {p97: 55.0, p95: 45.0, p90: 26.5}, yellow: {p97: 52.0, p95: 37.0, p90: 25.5}
@@ -167,6 +331,7 @@ Now, what are the values of `p97`, `p95`, `p90` for Green Taxi and Yellow Taxi, 
 - green: {p97: 40.0, p95: 33.0, p90: 24.5}, yellow: {p97: 31.5, p95: 25.5, p90: 19.0}
 - green: {p97: 55.0, p95: 45.0, p90: 26.5}, yellow: {p97: 52.0, p95: 25.5, p90: 19.0}
 
+### green: {p97: 55.0, p95: 45.0, p90: 26.5}, yellow: {p97: 31.5, p95: 25.5, p90: 19.0}
 
 ### Question 7: Top #Nth longest P90 travel time Location for FHV
 
@@ -188,6 +353,117 @@ For the Trips that **respectively** started from `Newark Airport`, `SoHo`, and `
 - LaGuardia Airport, Rosedale, Bath Beach
 - LaGuardia Airport, Yorkville East, Greenpoint
 
+### Solutions:
+1. Create a new model `fct_fhv_monthly_zone_traveltime_p90.sql`
+2. For each record in fact_fhv_trips.sql, compute the TIMESTAMP_DIFF() in seconds between dropoff_datetime and pickup_datetime, calling it trip_duration.
+```sql   
+{{
+    config(
+        materialized='table'
+    )
+}}
+
+WITH fhv_trips AS (
+  SELECT 
+    pickup_year
+  , pickup_month
+  , pickup_locationid
+  , pickup_zone
+  , pickup_datetime
+  , dropoff_locationid
+  , dropoff_zone
+  , dropoff_datetime
+  , TIMESTAMP_DIFF(dropoff_datetime, pickup_datetime, SECOND) AS trip_duration_sec
+  FROM {{ ref('fact_fhv_trips') }}
+)
+
+, duration_percent AS (
+  SELECT
+    pickup_year
+  , pickup_month
+  , pickup_locationid
+  , pickup_zone
+  , pickup_datetime
+  , dropoff_locationid
+  , dropoff_zone
+  , dropoff_datetime
+  , trip_duration_sec
+  , PERCENTILE_CONT(trip_duration_sec, 0.5) OVER(PARTITION BY pickup_year, pickup_month, pickup_locationid, dropoff_locationid) AS p50
+  , PERCENTILE_CONT(trip_duration_sec, 0.9) OVER(PARTITION BY pickup_year, pickup_month, pickup_locationid, dropoff_locationid) AS p90
+  , PERCENTILE_CONT(trip_duration_sec, 0.95) OVER(PARTITION BY pickup_year, pickup_month, pickup_locationid, dropoff_locationid) AS p95
+  , PERCENTILE_CONT(trip_duration_sec, 0.97) OVER(PARTITION BY pickup_year, pickup_month, pickup_locationid, dropoff_locationid) AS p97 
+  FROM fhv_trips
+)
+
+, final_data AS (
+  SELECT 
+    pickup_year
+  , pickup_month
+  , pickup_locationid
+  , dropoff_locationid
+  , pickup_zone
+  , dropoff_zone 
+  , COUNT(1) AS num_obs
+  , MIN(trip_duration_sec) AS min_trip_duration_sec
+  , AVG(trip_duration_sec) AS avg_trip_duration_sec
+  , ANY_VALUE(p50) AS p50
+  , ANY_VALUE(p90) AS p90
+  , ANY_VALUE(p95) AS p95
+  , ANY_VALUE(p97) AS p97
+  , MAX(trip_duration_sec) AS max_trip_duration_sec
+  FROM duration_percent
+  GROUP BY 1,2,3,4,5,6
+)
+
+SELECT 
+  pickup_year
+, pickup_month
+, pickup_zone
+, dropoff_zone 
+, num_obs
+, min_trip_duration_sec
+, avg_trip_duration_sec
+, p50
+, p90
+, p95
+, p97
+, max_trip_duration_sec
+FROM final_data 
+WHERE 1=1
+```
+
+3. Compute the **continous** `p90` of `trip_duration` partitioning by year, month, pickup_location_id, and dropoff_location_id
+```sql   
+WITH continous_data AS (
+  SELECT 
+    pickup_year
+  , pickup_month
+  , pickup_zone
+  , dropoff_zone 
+  , num_obs 
+  , num_distinct_obs
+  , min_trip_duration_sec
+  , avg_trip_duration_sec
+  , p50
+  , p90
+  , p95
+  , p97
+  , max_trip_duration_sec
+  , ROW_NUMBER() OVER(PARTITION BY pickup_Year, pickup_month, pickup_zone ORDER BY p90 DESC) AS p90_desc
+  FROM continous_data
+  WHERE 1=1
+        AND pickup_zone IN ('Newark Airport', 'SoHo', 'Yorkville East')
+        AND pickup_year = 2019
+        AND pickup_month = 11
+)
+
+SELECT *
+FROM final 
+WHERE 1=1
+      AND p90_desc = 2
+```
+
+### LaGuardia Airport, Chinatown, Garment District
 
 ## Submitting the solutions
 
